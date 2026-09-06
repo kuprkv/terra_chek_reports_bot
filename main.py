@@ -1,6 +1,7 @@
 import os
 import asyncio
 import re
+import sys
 from datetime import datetime, timedelta
 from telethon import TelegramClient, events
 from dotenv import load_dotenv
@@ -14,11 +15,17 @@ BOT_TOKEN = os.getenv('BOT_TOKEN', '')
 if not API_ID or not API_HASH or not BOT_TOKEN:
     raise ValueError('Не заданы API_ID, API_HASH или BOT_TOKEN')
 
-# ТОЛЬКО ТАК – без лишних параметров!
+# Принудительный вывод в stderr для диагностики
+print('Бот запускается...', file=sys.stderr)
+sys.stderr.flush()
+
+# Простейшая инициализация (без лишних параметров)
 client = TelegramClient('bot_session', API_ID, API_HASH)
 
+# Хранилище для настроек групп
 TOPIC_NAMES = {}
 
+# --------------------- Обработчики команд ---------------------
 @client.on(events.NewMessage(pattern='/start'))
 async def start(event):
     await event.reply(
@@ -63,18 +70,25 @@ async def handle_check(event, check_type):
     if not topic_name:
         await event.reply(f'⚠️ Сначала задай ветку для {"отчётов" if check_type == "reports" else "домашек"} командой /set_{check_type}_topic')
         return
+
+    # Парсим хэштеги
     hashtags = []
     if event.pattern_match.group(1):
         hashtags = [h.strip() for h in event.pattern_match.group(1).split() if h.startswith('#')]
     if not hashtags:
         await event.reply(f'❌ Передай хэштеги: /{event.pattern_match.string.split()[0]} #Иванов #Петров')
         return
+
+    # Ищем ID ветки (с диагностикой)
     thread_id = await find_topic_id(chat_id, topic_name)
     if not thread_id:
-        await event.reply(f'❌ Ветка "{topic_name}" не найдена')
+        await event.reply(f'❌ Ветка "{topic_name}" не найдена. Проверьте название и права бота.')
         return
+
+    # Вчерашний день
     yesterday = (datetime.now() - timedelta(days=1)).replace(hour=0, minute=0, second=0)
     today = yesterday + timedelta(days=1)
+
     result_lines = []
     for tag in hashtags:
         messages = await find_messages(chat_id, thread_id, tag, yesterday, today)
@@ -83,22 +97,53 @@ async def handle_check(event, check_type):
             result_lines.append(f'{tag} ✅ {" ".join(links)}')
         else:
             result_lines.append(f'{tag} ❌')
+
     reply = f'📊 {"Отчёты" if check_type == "reports" else "Домашки"} за {yesterday.strftime("%d.%m.%Y")}:\n' + '\n'.join(result_lines)
     await event.reply(reply)
 
+# --------------------- Функции поиска веток (с диагностикой) ---------------------
 async def find_topic_id(chat_id, topic_name):
+    """
+    Ищет ID ветки (темы) в группе по названию.
+    Выводит в логи список всех найденных веток.
+    Если точное совпадение не найдено, пытается найти частичное (без учёта регистра).
+    """
     try:
         async for dialog in client.iter_dialogs():
             if dialog.id == chat_id and dialog.is_group:
-                topics = await client.get_topics(dialog.entity)
+                # Проверяем, является ли группа форумом (поддерживает темы)
+                # Получаем полную информацию о чате
+                full_chat = await client.get_entity(chat_id)
+                if hasattr(full_chat, 'forum') and not full_chat.forum:
+                    print(f'Группа {chat_id} не является форумом (темы отключены)', file=sys.stderr)
+                    return None
+
+                # Получаем список тем
+                topics = await client.get_topics(full_chat)
+                print(f'Найдено тем: {len(topics)}', file=sys.stderr)
+                for t in topics:
+                    print(f'  - "{t.title}" (id={t.id})', file=sys.stderr)
+
+                # Сначала ищем точное совпадение (без учёта регистра)
                 for t in topics:
                     if t.title.lower() == topic_name.lower():
+                        print(f'✅ Найдена точная тема: "{t.title}"', file=sys.stderr)
                         return t.id
+
+                # Если точного нет, ищем частичное (содержит подстроку)
+                for t in topics:
+                    if topic_name.lower() in t.title.lower() or t.title.lower() in topic_name.lower():
+                        print(f'⚠️ Найдена частичная тема: "{t.title}" (искали "{topic_name}")', file=sys.stderr)
+                        return t.id
+
+                print(f'❌ Тема "{topic_name}" не найдена среди перечисленных выше', file=sys.stderr)
+                return None
     except Exception as e:
-        print(f'Ошибка при поиске ветки: {e}')
-    return None
+        print(f'Ошибка при поиске ветки: {e}', file=sys.stderr)
+        return None
 
 async def find_messages(chat_id, thread_id, hashtag, date_from, date_to):
+    """Ищет сообщения в указанной ветке за период, содержащие хэштег."""
     try:
         messages = await client.get_messages(
             chat_id,
@@ -114,10 +159,11 @@ async def find_messages(chat_id, thread_id, hashtag, date_from, date_to):
                     found.append(msg)
         return found
     except Exception as e:
-        print(f'Ошибка при поиске сообщений: {e}')
+        print(f'Ошибка при поиске сообщений: {e}', file=sys.stderr)
         return []
 
 def build_message_link(chat_id, message_id, thread_id):
+    """Генерирует ссылку на сообщение в ветке."""
     chat_id_abs = abs(chat_id)
     if str(chat_id).startswith('-100'):
         chat_id_link = str(chat_id)[4:]
@@ -125,17 +171,18 @@ def build_message_link(chat_id, message_id, thread_id):
         chat_id_link = str(chat_id_abs)
     return f'https://t.me/c/{chat_id_link}/{message_id}?thread={thread_id}'
 
+# --------------------- Запуск ---------------------
 async def main():
     try:
-        print('🔄 Подключение к Telegram...')
+        print('🔄 Подключение к Telegram...', file=sys.stderr)
         await client.start(bot_token=BOT_TOKEN)
-        print('✅ Бот успешно запущен')
+        print('✅ Бот успешно запущен', file=sys.stderr)
         await client.run_until_disconnected()
     except Exception as e:
-        print(f'❌ Критическая ошибка: {e}')
+        print(f'❌ Критическая ошибка: {e}', file=sys.stderr)
     finally:
         await client.disconnect()
-        print('🛑 Соединение закрыто')
+        print('🛑 Соединение закрыто', file=sys.stderr)
 
 if __name__ == '__main__':
     asyncio.run(main())
