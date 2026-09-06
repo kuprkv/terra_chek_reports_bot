@@ -4,6 +4,7 @@ import re
 import sys
 from datetime import datetime, timedelta
 from telethon import TelegramClient, events
+from telethon.tl.functions.messages import GetForumTopicsRequest
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -95,31 +96,42 @@ async def handle_check(event, check_type):
     await event.reply(reply)
 
 async def find_topic_id(chat_id, topic_name):
-    """Находит ID темы (ветки) по названию, используя прямой доступ к чату."""
+    """
+    Находит ID темы (ветки) по названию, используя прямой API-запрос GetForumTopicsRequest.
+    """
     try:
         entity = await client.get_entity(chat_id)
+        # Проверяем, включены ли темы
         if hasattr(entity, 'forum') and not entity.forum:
-            print(f'Группа {chat_id} не является форумом (темы отключены)', file=sys.stderr)
+            print('Темы отключены в этой группе', file=sys.stderr)
             return None
-        
-        topics = await client.get_topics(entity)
+
+        # Получаем список тем через прямой вызов API
+        result = await client(GetForumTopicsRequest(
+            peer=entity,
+            offset_id=0,
+            offset_date=None,
+            offset_topic=0,
+            limit=100  # можно увеличить, если тем больше 100
+        ))
+        topics = result.topics
         print(f'Найдено тем: {len(topics)}', file=sys.stderr)
         for t in topics:
             print(f'  - "{t.title}" (id={t.id})', file=sys.stderr)
-        
-        # Точное совпадение
+
+        # Точное совпадение (регистронезависимое)
         for t in topics:
             if t.title.lower() == topic_name.lower():
                 print(f'✅ Найдена точная тема: "{t.title}"', file=sys.stderr)
                 return t.id
-        
-        # Частичное совпадение
+
+        # Частичное совпадение (для гибкости)
         for t in topics:
             if topic_name.lower() in t.title.lower() or t.title.lower() in topic_name.lower():
                 print(f'⚠️ Найдена частичная тема: "{t.title}" (искали "{topic_name}")', file=sys.stderr)
                 return t.id
-        
-        print(f'❌ Тема "{topic_name}" не найдена среди перечисленных выше', file=sys.stderr)
+
+        print(f'❌ Тема "{topic_name}" не найдена', file=sys.stderr)
         return None
     except Exception as e:
         print(f'Ошибка при поиске ветки: {e}', file=sys.stderr)
