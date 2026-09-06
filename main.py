@@ -4,7 +4,6 @@ import re
 import sys
 from datetime import datetime, timedelta
 from telethon import TelegramClient, events
-from telethon.tl.functions.messages import GetForumTopicsRequest
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -21,65 +20,51 @@ sys.stderr.flush()
 
 client = TelegramClient('bot_session', API_ID, API_HASH)
 
-TOPIC_NAMES = {}
+# Хранилище: для каждой группы храним ID ветки для отчётов
+TOPIC_IDS = {}  # chat_id -> thread_id (число)
 
 @client.on(events.NewMessage(pattern='/start'))
 async def start(event):
     await event.reply(
-        '👋 Привет! Я бот для проверки отчётов и домашних заданий.\n'
+        '👋 Привет! Я бот для проверки отчётов.\n'
         'Настрой меня:\n'
-        '/set_reports_topic <название> – ветка для отчётов\n'
-        '/set_homework_topic <название> – ветка для домашек\n\n'
+        '/set_reports_topic <ссылка_на_ветку> – задать ветку для отчётов\n'
+        'Например: /set_reports_topic https://t.me/c/3934689847/4\n\n'
         'Проверка:\n'
-        '/check_reports #Иванов #Петров\n'
-        '/check_homework #Иванов #Петров'
+        '/check_reports #Иванов #Петров – проверить отчёты за вчера'
     )
 
 @client.on(events.NewMessage(pattern='/set_reports_topic (.+)'))
 async def set_reports_topic(event):
-    topic_name = event.pattern_match.group(1).strip()
+    link = event.pattern_match.group(1).strip()
+    # Парсим ссылку вида https://t.me/c/123456789/5
+    # Извлекаем последнее число после последнего слеша
+    match = re.search(r'/(\d+)$', link)
+    if not match:
+        await event.reply('❌ Неверный формат ссылки. Ожидается: https://t.me/c/123456789/5')
+        return
+    thread_id = int(match.group(1))
     chat_id = event.chat_id
-    if chat_id not in TOPIC_NAMES:
-        TOPIC_NAMES[chat_id] = {}
-    TOPIC_NAMES[chat_id]['reports'] = topic_name
-    await event.reply(f'✅ Ветка для отчётов установлена: "{topic_name}"')
-
-@client.on(events.NewMessage(pattern='/set_homework_topic (.+)'))
-async def set_homework_topic(event):
-    topic_name = event.pattern_match.group(1).strip()
-    chat_id = event.chat_id
-    if chat_id not in TOPIC_NAMES:
-        TOPIC_NAMES[chat_id] = {}
-    TOPIC_NAMES[chat_id]['homework'] = topic_name
-    await event.reply(f'✅ Ветка для домашних заданий установлена: "{topic_name}"')
+    TOPIC_IDS[chat_id] = thread_id
+    await event.reply(f'✅ Ветка для отчётов установлена. ID темы: {thread_id}')
 
 @client.on(events.NewMessage(pattern='/check_reports(.+)?'))
 async def check_reports(event):
-    await handle_check(event, 'reports')
-
-@client.on(events.NewMessage(pattern='/check_homework(.+)?'))
-async def check_homework(event):
-    await handle_check(event, 'homework')
-
-async def handle_check(event, check_type):
     chat_id = event.chat_id
-    topic_name = TOPIC_NAMES.get(chat_id, {}).get(check_type)
-    if not topic_name:
-        await event.reply(f'⚠️ Сначала задай ветку для {"отчётов" if check_type == "reports" else "домашек"} командой /set_{check_type}_topic')
+    thread_id = TOPIC_IDS.get(chat_id)
+    if not thread_id:
+        await event.reply('⚠️ Сначала задай ветку для отчётов командой /set_reports_topic <ссылка>')
         return
 
+    # Парсим хэштеги
     hashtags = []
     if event.pattern_match.group(1):
         hashtags = [h.strip() for h in event.pattern_match.group(1).split() if h.startswith('#')]
     if not hashtags:
-        await event.reply(f'❌ Передай хэштеги: /{event.pattern_match.string.split()[0]} #Иванов #Петров')
+        await event.reply('❌ Передай хэштеги: /check_reports #Иванов #Петров')
         return
 
-    thread_id = await find_topic_id(chat_id, topic_name)
-    if not thread_id:
-        await event.reply(f'❌ Ветка "{topic_name}" не найдена. Проверьте название и права бота.')
-        return
-
+    # Вчерашний день
     yesterday = (datetime.now() - timedelta(days=1)).replace(hour=0, minute=0, second=0)
     today = yesterday + timedelta(days=1)
 
@@ -92,50 +77,8 @@ async def handle_check(event, check_type):
         else:
             result_lines.append(f'{tag} ❌')
 
-    reply = f'📊 {"Отчёты" if check_type == "reports" else "Домашки"} за {yesterday.strftime("%d.%m.%Y")}:\n' + '\n'.join(result_lines)
+    reply = f'📊 Отчёты за {yesterday.strftime("%d.%m.%Y")}:\n' + '\n'.join(result_lines)
     await event.reply(reply)
-
-async def find_topic_id(chat_id, topic_name):
-    """
-    Находит ID темы (ветки) по названию, используя прямой API-запрос GetForumTopicsRequest.
-    """
-    try:
-        entity = await client.get_entity(chat_id)
-        # Проверяем, включены ли темы
-        if hasattr(entity, 'forum') and not entity.forum:
-            print('Темы отключены в этой группе', file=sys.stderr)
-            return None
-
-        # Получаем список тем через прямой вызов API
-        result = await client(GetForumTopicsRequest(
-            peer=entity,
-            offset_id=0,
-            offset_date=None,
-            offset_topic=0,
-            limit=100  # можно увеличить, если тем больше 100
-        ))
-        topics = result.topics
-        print(f'Найдено тем: {len(topics)}', file=sys.stderr)
-        for t in topics:
-            print(f'  - "{t.title}" (id={t.id})', file=sys.stderr)
-
-        # Точное совпадение (регистронезависимое)
-        for t in topics:
-            if t.title.lower() == topic_name.lower():
-                print(f'✅ Найдена точная тема: "{t.title}"', file=sys.stderr)
-                return t.id
-
-        # Частичное совпадение (для гибкости)
-        for t in topics:
-            if topic_name.lower() in t.title.lower() or t.title.lower() in topic_name.lower():
-                print(f'⚠️ Найдена частичная тема: "{t.title}" (искали "{topic_name}")', file=sys.stderr)
-                return t.id
-
-        print(f'❌ Тема "{topic_name}" не найдена', file=sys.stderr)
-        return None
-    except Exception as e:
-        print(f'Ошибка при поиске ветки: {e}', file=sys.stderr)
-        return None
 
 async def find_messages(chat_id, thread_id, hashtag, date_from, date_to):
     try:
