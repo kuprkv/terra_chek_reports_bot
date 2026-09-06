@@ -3,10 +3,9 @@ import asyncio
 import re
 from datetime import datetime, timedelta
 from telethon import TelegramClient, events
-from telethon.network.connection import ConnectionTcpFull
 from dotenv import load_dotenv
 
-load_dotenv()  # загружаем переменные из .env (на локальной машине)
+load_dotenv()
 
 API_ID = int(os.getenv('API_ID', 0))
 API_HASH = os.getenv('API_HASH', '')
@@ -15,24 +14,11 @@ BOT_TOKEN = os.getenv('BOT_TOKEN', '')
 if not API_ID or not API_HASH or not BOT_TOKEN:
     raise ValueError('Не заданы API_ID, API_HASH или BOT_TOKEN')
 
-# Инициализация клиента с явными параметрами для надёжности
-client = TelegramClient(
-    'bot_session',
-    API_ID,
-    API_HASH,
-    connection=ConnectionTcpFull,
-    connection_parameters={
-        'ip': '149.154.167.91',   # DC1 – при необходимости замените на свой DC
-        'port': 443,              # или 80, если 443 заблокирован
-        'dc_id': 1,
-    },
-    connection_retries=10,        # количество попыток переподключения
-)
+# ТОЛЬКО ТАК – без лишних параметров!
+client = TelegramClient('bot_session', API_ID, API_HASH)
 
-# Хранилище: для каждой группы храним названия веток
-TOPIC_NAMES = {}  # chat_id -> {'reports': 'Отчёты', 'homework': 'Домашки'}
+TOPIC_NAMES = {}
 
-# --------------------- Команды настройки ---------------------
 @client.on(events.NewMessage(pattern='/start'))
 async def start(event):
     await event.reply(
@@ -63,7 +49,6 @@ async def set_homework_topic(event):
     TOPIC_NAMES[chat_id]['homework'] = topic_name
     await event.reply(f'✅ Ветка для домашних заданий установлена: "{topic_name}"')
 
-# --------------------- Команды проверки ---------------------
 @client.on(events.NewMessage(pattern='/check_reports(.+)?'))
 async def check_reports(event):
     await handle_check(event, 'reports')
@@ -78,26 +63,18 @@ async def handle_check(event, check_type):
     if not topic_name:
         await event.reply(f'⚠️ Сначала задай ветку для {"отчётов" if check_type == "reports" else "домашек"} командой /set_{check_type}_topic')
         return
-
-    # Парсим хэштеги из команды
     hashtags = []
     if event.pattern_match.group(1):
         hashtags = [h.strip() for h in event.pattern_match.group(1).split() if h.startswith('#')]
     if not hashtags:
         await event.reply(f'❌ Передай хэштеги: /{event.pattern_match.string.split()[0]} #Иванов #Петров')
         return
-
-    # Ищем ID ветки
     thread_id = await find_topic_id(chat_id, topic_name)
     if not thread_id:
         await event.reply(f'❌ Ветка "{topic_name}" не найдена')
         return
-
-    # Вчерашний день
     yesterday = (datetime.now() - timedelta(days=1)).replace(hour=0, minute=0, second=0)
     today = yesterday + timedelta(days=1)
-
-    # Проверяем каждый хэштег
     result_lines = []
     for tag in hashtags:
         messages = await find_messages(chat_id, thread_id, tag, yesterday, today)
@@ -106,13 +83,10 @@ async def handle_check(event, check_type):
             result_lines.append(f'{tag} ✅ {" ".join(links)}')
         else:
             result_lines.append(f'{tag} ❌')
-
     reply = f'📊 {"Отчёты" if check_type == "reports" else "Домашки"} за {yesterday.strftime("%d.%m.%Y")}:\n' + '\n'.join(result_lines)
     await event.reply(reply)
 
-# --------------------- Вспомогательные функции ---------------------
 async def find_topic_id(chat_id, topic_name):
-    """Ищет ID ветки форума по её названию"""
     try:
         async for dialog in client.iter_dialogs():
             if dialog.id == chat_id and dialog.is_group:
@@ -125,10 +99,6 @@ async def find_topic_id(chat_id, topic_name):
     return None
 
 async def find_messages(chat_id, thread_id, hashtag, date_from, date_to):
-    """
-    Ищет сообщения в указанной ветке за период, содержащие хэштег.
-    Возвращает список объектов Message.
-    """
     try:
         messages = await client.get_messages(
             chat_id,
@@ -148,7 +118,6 @@ async def find_messages(chat_id, thread_id, hashtag, date_from, date_to):
         return []
 
 def build_message_link(chat_id, message_id, thread_id):
-    """Генерирует ссылку на сообщение в ветке"""
     chat_id_abs = abs(chat_id)
     if str(chat_id).startswith('-100'):
         chat_id_link = str(chat_id)[4:]
@@ -156,7 +125,6 @@ def build_message_link(chat_id, message_id, thread_id):
         chat_id_link = str(chat_id_abs)
     return f'https://t.me/c/{chat_id_link}/{message_id}?thread={thread_id}'
 
-# --------------------- Запуск бота ---------------------
 async def main():
     try:
         print('🔄 Подключение к Telegram...')
