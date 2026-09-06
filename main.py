@@ -20,8 +20,7 @@ sys.stderr.flush()
 
 client = TelegramClient('bot_session', API_ID, API_HASH)
 
-# Хранилище: для каждой группы храним ID ветки для отчётов
-TOPIC_IDS = {}  # chat_id -> thread_id (число)
+TOPIC_IDS = {}
 
 @client.on(events.NewMessage(pattern='/start'))
 async def start(event):
@@ -31,14 +30,13 @@ async def start(event):
         '/set_reports_topic <ссылка_на_ветку> – задать ветку для отчётов\n'
         'Например: /set_reports_topic https://t.me/c/3934689847/4\n\n'
         'Проверка:\n'
-        '/check_reports #Иванов #Петров – проверить отчёты за вчера'
+        '/check_reports #Иванов #Петров – проверить отчёты за вчера\n\n'
+        'Для справки: /help'
     )
 
 @client.on(events.NewMessage(pattern='/set_reports_topic (.+)'))
 async def set_reports_topic(event):
     link = event.pattern_match.group(1).strip()
-    # Парсим ссылку вида https://t.me/c/123456789/5
-    # Извлекаем последнее число после последнего слеша
     match = re.search(r'/(\d+)$', link)
     if not match:
         await event.reply('❌ Неверный формат ссылки. Ожидается: https://t.me/c/123456789/5')
@@ -56,7 +54,6 @@ async def check_reports(event):
         await event.reply('⚠️ Сначала задай ветку для отчётов командой /set_reports_topic <ссылка>')
         return
 
-    # Парсим хэштеги
     hashtags = []
     if event.pattern_match.group(1):
         hashtags = [h.strip() for h in event.pattern_match.group(1).split() if h.startswith('#')]
@@ -64,7 +61,6 @@ async def check_reports(event):
         await event.reply('❌ Передай хэштеги: /check_reports #Иванов #Петров')
         return
 
-    # Вчерашний день
     yesterday = (datetime.now() - timedelta(days=1)).replace(hour=0, minute=0, second=0)
     today = yesterday + timedelta(days=1)
 
@@ -80,20 +76,42 @@ async def check_reports(event):
     reply = f'📊 Отчёты за {yesterday.strftime("%d.%m.%Y")}:\n' + '\n'.join(result_lines)
     await event.reply(reply)
 
+# ---------- НОВАЯ КОМАНДА /help ----------
+@client.on(events.NewMessage(pattern='/help'))
+async def help_command(event):
+    await event.reply(
+        '📖 **Справка по командам бота:**\n\n'
+        '/start – показать приветствие\n'
+        '/set_reports_topic <ссылка> – задать ветку для отчётов\n'
+        '   Пример: /set_reports_topic https://t.me/c/123456789/5\n'
+        '/check_reports #хэштеги – проверить отчёты за вчера\n'
+        '   Пример: /check_reports #Иванов #Петров\n'
+        '/help – показать эту справку'
+    )
+# ----------------------------------------
+
 async def find_messages(chat_id, thread_id, hashtag, date_from, date_to):
     try:
         messages = await client.get_messages(
             chat_id,
             limit=200,
             offset_date=int(date_to.timestamp()),
-            reply_to=thread_id,
             reverse=False
         )
         found = []
         for msg in messages:
-            if msg.date and msg.date >= date_from and msg.date < date_to:
-                if msg.message and re.search(rf'(?<!\w){re.escape(hashtag)}(?!\w)', msg.message, re.IGNORECASE):
-                    found.append(msg)
+            if not msg.date or not (date_from <= msg.date < date_to):
+                continue
+            is_in_topic = False
+            if msg.id == thread_id:
+                is_in_topic = True
+            elif msg.reply_to and hasattr(msg.reply_to, 'reply_to_top_id'):
+                if msg.reply_to.reply_to_top_id == thread_id:
+                    is_in_topic = True
+            if not is_in_topic:
+                continue
+            if msg.message and re.search(rf'(?<!\w){re.escape(hashtag)}(?!\w)', msg.message, re.IGNORECASE):
+                found.append(msg)
         return found
     except Exception as e:
         print(f'Ошибка при поиске сообщений: {e}', file=sys.stderr)
