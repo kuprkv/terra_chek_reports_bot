@@ -20,14 +20,13 @@ client = TelegramClient(
     'bot_session',
     API_ID,
     API_HASH,
-    timeout=30,
-    retries=10,
     connection=ConnectionTcpFull,
     connection_parameters={
         'ip': '149.154.167.91',   # DC1 – при необходимости замените на свой DC
         'port': 443,              # или 80, если 443 заблокирован
         'dc_id': 1,
-    }
+    },
+    connection_retries=10,        # количество попыток переподключения
 )
 
 # Хранилище: для каждой группы храним названия веток
