@@ -11,11 +11,14 @@ load_dotenv()
 API_ID = int(os.getenv('API_ID', 0))
 API_HASH = os.getenv('API_HASH', '')
 BOT_TOKEN = os.getenv('BOT_TOKEN', '')
+TIMEZONE_OFFSET = int(os.getenv('TIMEZONE_OFFSET', 0))  # Смещение в часах от UTC
 
 if not API_ID or not API_HASH or not BOT_TOKEN:
     raise ValueError('Не заданы API_ID, API_HASH или BOT_TOKEN')
 
 print('Бот запускается...', file=sys.stderr)
+print(f'Текущее UTC: {datetime.utcnow()}', file=sys.stderr)
+print(f'Смещение часового пояса: {TIMEZONE_OFFSET}', file=sys.stderr)
 sys.stderr.flush()
 
 client = TelegramClient('bot_session', API_ID, API_HASH)
@@ -32,6 +35,18 @@ async def start(event):
         'Проверка:\n'
         '/check_reports #Иванов #Петров – проверить отчёты за вчера\n\n'
         'Для справки: /help'
+    )
+
+@client.on(events.NewMessage(pattern='/help'))
+async def help_command(event):
+    await event.reply(
+        '📖 **Справка по командам бота:**\n\n'
+        '/start – показать приветствие\n'
+        '/set_reports_topic <ссылка> – задать ветку для отчётов\n'
+        '   Пример: /set_reports_topic https://t.me/c/123456789/5\n'
+        '/check_reports #хэштеги – проверить отчёты за вчера\n'
+        '   Пример: /check_reports #Иванов #Петров\n'
+        '/help – показать эту справку'
     )
 
 @client.on(events.NewMessage(pattern='/set_reports_topic (.+)'))
@@ -61,7 +76,10 @@ async def check_reports(event):
         await event.reply('❌ Передай хэштеги: /check_reports #Иванов #Петров')
         return
 
-    yesterday = (datetime.now() - timedelta(days=1)).replace(hour=0, minute=0, second=0)
+    # Вычисляем даты с учётом часового пояса
+    now_utc = datetime.utcnow()
+    local_now = now_utc + timedelta(hours=TIMEZONE_OFFSET)
+    yesterday = (local_now - timedelta(days=1)).replace(hour=0, minute=0, second=0)
     today = yesterday + timedelta(days=1)
 
     result_lines = []
@@ -75,20 +93,6 @@ async def check_reports(event):
 
     reply = f'📊 Отчёты за {yesterday.strftime("%d.%m.%Y")}:\n' + '\n'.join(result_lines)
     await event.reply(reply)
-
-# ---------- НОВАЯ КОМАНДА /help ----------
-@client.on(events.NewMessage(pattern='/help'))
-async def help_command(event):
-    await event.reply(
-        '📖 **Справка по командам бота:**\n\n'
-        '/start – показать приветствие\n'
-        '/set_reports_topic <ссылка> – задать ветку для отчётов\n'
-        '   Пример: /set_reports_topic https://t.me/c/123456789/5\n'
-        '/check_reports #хэштеги – проверить отчёты за вчера\n'
-        '   Пример: /check_reports #Иванов #Петров\n'
-        '/help – показать эту справку'
-    )
-# ----------------------------------------
 
 async def find_messages(chat_id, thread_id, hashtag, date_from, date_to):
     try:
@@ -114,7 +118,10 @@ async def find_messages(chat_id, thread_id, hashtag, date_from, date_to):
                 found.append(msg)
         return found
     except Exception as e:
-        print(f'Ошибка при поиске сообщений: {e}', file=sys.stderr)
+        if 'GetHistoryRequest' in str(e):
+            print('❌ Бот не имеет прав на чтение истории. Добавьте его в администраторы с правом просмотра сообщений.', file=sys.stderr)
+        else:
+            print(f'Ошибка при поиске сообщений: {e}', file=sys.stderr)
         return []
 
 def build_message_link(chat_id, message_id, thread_id):
